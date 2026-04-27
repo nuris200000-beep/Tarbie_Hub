@@ -1,69 +1,55 @@
-import 'package:flutter/material.dart';
+import 'dart:async';
 
-void main() {
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'config/tarbie_cloud_config.dart';
+import 'data/app_database.dart';
+import 'models/app_user.dart';
+import 'platform/init_sqflite_export.dart';
+import 'ui/admin_page.dart';
+import 'ui/auth_pages.dart';
+import 'ui/event_create_page.dart';
+import 'ui/feed_page.dart';
+import 'ui/notifications_page.dart';
+import 'ui/profile_page.dart';
+import 'ui/psychologist_module_page.dart';
+import 'ui/social_requests_page.dart';
+import 'widgets/role_badges.dart';
+import 'widgets/user_avatar.dart';
+
+const Color _kBrandNavy = Color(0xFF1A2E4A);
+const Color _kBrandTurquoise = Color(0xFF4FD1C5);
+const Color _kBrandCoral = Color(0xFFE57373);
+const Color _kSurfaceLight = Color(0xFFFAFBFC);
+const Color _kCardLight = Color(0xFFFFFFFF);
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  if (TarbieCloudConfig.isCloudEnabled) {
+    await Supabase.initialize(
+      url: TarbieCloudConfig.supabaseUrl,
+      anonKey: TarbieCloudConfig.supabaseAnonKey,
+    );
+  }
+  await initSqfliteForDesktop();
+  await AppDatabase.instance.init();
   runApp(const TarbieHubApp());
 }
 
-enum UserRole {
-  deputyDirector('Замдиректора'),
-  psychologist('Психолог'),
-  socialPedagogue('Соцпедагог'),
-  curator('Куратор'),
-  student('Студент');
-
-  const UserRole(this.label);
-  final String label;
-}
-
 enum AppSection {
-  dashboard('Dashboard', Icons.dashboard_outlined),
-  events('Мероприятия', Icons.event_note_outlined),
+  newsFeed('Лента', Icons.dynamic_feed_outlined),
   eventCreate('Создать мероприятие', Icons.add_circle_outline),
-  eventDetails('Карточка мероприятия', Icons.assignment_outlined),
   psychologist('Модуль психолога', Icons.psychology_outlined),
   social('Соц. заявки', Icons.volunteer_activism_outlined),
   notifications('Уведомления', Icons.notifications_none),
-  profile('Профиль', Icons.person_outline);
+  profile('Профиль', Icons.person_outline),
+  adminPanel('Админ-панель', Icons.admin_panel_settings_outlined);
 
   const AppSection(this.title, this.icon);
   final String title;
   final IconData icon;
 }
-
-class AppUser {
-  const AppUser({
-    required this.login,
-    required this.name,
-    required this.roles,
-  });
-
-  final String login;
-  final String name;
-  final List<UserRole> roles;
-}
-
-const List<AppUser> mockUsers = <AppUser>[
-  AppUser(
-    login: 'admin',
-    name: 'Алия Куанышевна',
-    roles: <UserRole>[UserRole.deputyDirector, UserRole.curator],
-  ),
-  AppUser(
-    login: 'psy',
-    name: 'Гульмира С.',
-    roles: <UserRole>[UserRole.psychologist],
-  ),
-  AppUser(
-    login: 'social',
-    name: 'Руслан Ж.',
-    roles: <UserRole>[UserRole.socialPedagogue],
-  ),
-  AppUser(
-    login: 'student',
-    name: 'Айбар Н.',
-    roles: <UserRole>[UserRole.student],
-  ),
-];
 
 class TarbieHubApp extends StatefulWidget {
   const TarbieHubApp({super.key});
@@ -72,15 +58,54 @@ class TarbieHubApp extends StatefulWidget {
   State<TarbieHubApp> createState() => _TarbieHubAppState();
 }
 
-class _TarbieHubAppState extends State<TarbieHubApp> {
+class _TarbieHubAppState extends State<TarbieHubApp> with WidgetsBindingObserver {
   AppUser? _currentUser;
   UserRole? _activeRole;
+  Timer? _presencePulse;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    _presencePulse?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final u = _currentUser;
+    if (u != null &&
+        (state == AppLifecycleState.paused || state == AppLifecycleState.detached)) {
+      AppDatabase.instance.touchPresence(u.id);
+    }
+  }
+
+  void _startPresencePulse() {
+    _presencePulse?.cancel();
+    _presencePulse = Timer.periodic(const Duration(seconds: 25), (_) {
+      final u = _currentUser;
+      if (u != null) {
+        AppDatabase.instance.touchPresence(u.id);
+      }
+    });
+  }
+
+  void _stopPresencePulse() {
+    _presencePulse?.cancel();
+    _presencePulse = null;
+  }
 
   void _onLogin(AppUser user) {
     setState(() {
       _currentUser = user;
       _activeRole = user.roles.length == 1 ? user.roles.first : null;
     });
+    _startPresencePulse();
   }
 
   void _onRoleSelect(UserRole role) {
@@ -96,10 +121,19 @@ class _TarbieHubAppState extends State<TarbieHubApp> {
   }
 
   void _logout() {
+    final u = _currentUser;
+    _stopPresencePulse();
+    if (u != null) {
+      AppDatabase.instance.touchPresence(u.id);
+    }
     setState(() {
       _currentUser = null;
       _activeRole = null;
     });
+  }
+
+  void _onUserProfileUpdated(AppUser u) {
+    setState(() => _currentUser = u);
   }
 
   @override
@@ -108,11 +142,93 @@ class _TarbieHubAppState extends State<TarbieHubApp> {
       debugShowCheckedModeBanner: false,
       title: 'College Tarbie Hub',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF224A9A)),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: _kBrandNavy,
+          primary: _kBrandNavy,
+          secondary: _kBrandTurquoise,
+          tertiary: const Color(0xFFFBBF24),
+          error: _kBrandCoral,
+          surface: _kSurfaceLight,
+        ),
+        scaffoldBackgroundColor: _kSurfaceLight,
+        cardColor: _kCardLight,
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.white,
+          foregroundColor: _kBrandNavy,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: false,
+          surfaceTintColor: Colors.transparent,
+        ),
+        cardTheme: CardThemeData(
+          elevation: 6,
+          margin: EdgeInsets.zero,
+          shadowColor: _kBrandNavy.withValues(alpha: 0.08),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: BorderSide(color: Colors.grey.withValues(alpha: 0.12)),
+          ),
+          surfaceTintColor: Colors.transparent,
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          isDense: true,
+          filled: true,
+          fillColor: Colors.white,
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide(color: Colors.grey.withValues(alpha: 0.24)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide(color: Colors.grey.withValues(alpha: 0.24)),
+          ),
+          focusedBorder: const OutlineInputBorder(
+            borderRadius: BorderRadius.all(Radius.circular(14)),
+            borderSide: BorderSide(color: _kBrandTurquoise, width: 1.5),
+          ),
+        ),
+        chipTheme: ChipThemeData(
+          backgroundColor: _kBrandTurquoise.withValues(alpha: 0.10),
+          selectedColor: _kBrandTurquoise.withValues(alpha: 0.22),
+          side: BorderSide(color: _kBrandTurquoise.withValues(alpha: 0.35)),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+          labelStyle: const TextStyle(color: _kBrandNavy, fontWeight: FontWeight.w600),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            backgroundColor: _kBrandNavy,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            minimumSize: const Size(0, 48),
+          ),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: _kBrandNavy,
+            side: BorderSide(color: _kBrandNavy.withValues(alpha: 0.25)),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+            minimumSize: const Size(0, 44),
+          ),
+        ),
+        navigationBarTheme: NavigationBarThemeData(
+          backgroundColor: Colors.white.withValues(alpha: 0.97),
+          indicatorColor: _kBrandTurquoise.withValues(alpha: 0.22),
+          iconTheme: WidgetStateProperty.resolveWith(
+            (states) => IconThemeData(
+              color: states.contains(WidgetState.selected) ? _kBrandNavy : Colors.grey.shade600,
+            ),
+          ),
+          labelTextStyle: WidgetStateProperty.resolveWith(
+            (states) => TextStyle(
+              fontWeight: FontWeight.w600,
+              color: states.contains(WidgetState.selected) ? _kBrandNavy : Colors.grey.shade600,
+            ),
+          ),
+        ),
         useMaterial3: true,
       ),
       home: _currentUser == null
-          ? LoginPage(onLogin: _onLogin)
+          ? LoginPage(onLoggedIn: _onLogin)
           : _activeRole == null
               ? RoleSelectionPage(
                   user: _currentUser!,
@@ -126,110 +242,8 @@ class _TarbieHubAppState extends State<TarbieHubApp> {
                       ? _openRoleSelection
                       : null,
                   onLogout: _logout,
+                  onUserUpdated: _onUserProfileUpdated,
                 ),
-    );
-  }
-}
-
-class LoginPage extends StatefulWidget {
-  const LoginPage({super.key, required this.onLogin});
-
-  final ValueChanged<AppUser> onLogin;
-
-  @override
-  State<LoginPage> createState() => _LoginPageState();
-}
-
-class _LoginPageState extends State<LoginPage> {
-  final _formKey = GlobalKey<FormState>();
-  final _loginController = TextEditingController(text: 'admin');
-  final _passwordController = TextEditingController(text: '123456');
-  String? _error;
-
-  @override
-  void dispose() {
-    _loginController.dispose();
-    _passwordController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) return;
-    final user = mockUsers.where((u) => u.login == _loginController.text).firstOrNull;
-    if (user == null || _passwordController.text != '123456') {
-      setState(() {
-        _error = 'Неверный логин или пароль. Для демо используйте пароль: 123456';
-      });
-      return;
-    }
-    widget.onLogin(user);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 420, minWidth: 320),
-          child: Card(
-            margin: const EdgeInsets.all(24),
-            child: Padding(
-              padding: const EdgeInsets.all(24),
-              child: Form(
-                key: _formKey,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('College Tarbie Hub',
-                        style: Theme.of(context).textTheme.headlineSmall),
-                    const SizedBox(height: 4),
-                    Text('Desktop MVP — вход',
-                        style: Theme.of(context).textTheme.bodyMedium),
-                    const SizedBox(height: 20),
-                    TextFormField(
-                      controller: _loginController,
-                      decoration: const InputDecoration(
-                        labelText: 'Логин',
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: (value) =>
-                          value == null || value.isEmpty ? 'Введите логин' : null,
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: _passwordController,
-                      obscureText: true,
-                      decoration: const InputDecoration(
-                        labelText: 'Пароль',
-                        border: OutlineInputBorder(),
-                        helperText: 'Демо-пароль: 123456',
-                      ),
-                      validator: (value) =>
-                          value == null || value.isEmpty ? 'Введите пароль' : null,
-                    ),
-                    if (_error != null) ...[
-                      const SizedBox(height: 10),
-                      Text(_error!,
-                          style: TextStyle(
-                            color: Theme.of(context).colorScheme.error,
-                          )),
-                    ],
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: FilledButton(
-                        onPressed: _submit,
-                        child: const Text('Войти'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
     );
   }
 }
@@ -271,12 +285,16 @@ class RoleSelectionPage extends StatelessWidget {
                 Wrap(
                   spacing: 12,
                   runSpacing: 12,
-                  children: user.roles
-                      .map((role) => ActionChip(
-                            label: Text(role.label),
-                            onPressed: () => onSelectRole(role),
-                          ))
-                      .toList(),
+                  children: user.roles.map((role) {
+                    final s = RoleBadgeStyle.forRole(role);
+                    return ActionChip(
+                      label: Text(role.label),
+                      backgroundColor: s.background,
+                      side: BorderSide(color: s.border),
+                      labelStyle: TextStyle(color: s.foreground, fontWeight: FontWeight.w600),
+                      onPressed: () => onSelectRole(role),
+                    );
+                  }).toList(),
                 ),
               ],
             ),
@@ -293,12 +311,14 @@ class AppShell extends StatefulWidget {
     required this.user,
     required this.role,
     required this.onLogout,
+    required this.onUserUpdated,
     this.onChangeRole,
   });
 
   final AppUser user;
   final UserRole role;
   final VoidCallback onLogout;
+  final ValueChanged<AppUser> onUserUpdated;
   final VoidCallback? onChangeRole;
 
   @override
@@ -307,6 +327,7 @@ class AppShell extends StatefulWidget {
 
 class _AppShellState extends State<AppShell> {
   late AppSection _section;
+  int _feedReloadToken = 0;
 
   @override
   void initState() {
@@ -326,9 +347,8 @@ class _AppShellState extends State<AppShell> {
     switch (role) {
       case UserRole.deputyDirector:
         return const [
-          AppSection.dashboard,
-          AppSection.events,
-          AppSection.eventDetails,
+          AppSection.newsFeed,
+          AppSection.eventCreate,
           AppSection.psychologist,
           AppSection.social,
           AppSection.notifications,
@@ -336,45 +356,92 @@ class _AppShellState extends State<AppShell> {
         ];
       case UserRole.curator:
         return const [
-          AppSection.events,
+          AppSection.newsFeed,
           AppSection.eventCreate,
-          AppSection.eventDetails,
           AppSection.notifications,
           AppSection.profile,
         ];
       case UserRole.psychologist:
         return const [
+          AppSection.newsFeed,
+          AppSection.eventCreate,
           AppSection.psychologist,
           AppSection.notifications,
           AppSection.profile,
         ];
       case UserRole.socialPedagogue:
         return const [
+          AppSection.newsFeed,
+          AppSection.eventCreate,
           AppSection.social,
           AppSection.notifications,
           AppSection.profile,
         ];
       case UserRole.student:
         return const [
+          AppSection.newsFeed,
           AppSection.social,
-          AppSection.events,
           AppSection.notifications,
           AppSection.profile,
         ];
     }
   }
 
+  List<AppSection> _visibleSections() {
+    final base = _allowedSections(widget.role);
+    if (widget.user.isAdmin) {
+      return <AppSection>[...base, AppSection.adminPanel];
+    }
+    return base;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final sections = _allowedSections(widget.role);
+    final sections = _visibleSections();
+    final activeSection =
+        sections.contains(_section) ? _section : sections.first;
+    if (activeSection != _section) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _section = activeSection);
+      });
+    }
     final width = MediaQuery.of(context).size.width;
     final isDesktop = width >= 1280;
     final isTablet = width >= 768 && width < 1280;
-    final content = _SectionContent(section: _section);
+    final content = _SectionContent(
+      section: activeSection,
+      user: widget.user,
+      role: widget.role,
+      feedReloadToken: _feedReloadToken,
+      onUserUpdated: widget.onUserUpdated,
+      onPublishedGoFeed: () => setState(() {
+        _feedReloadToken++;
+        _section = AppSection.newsFeed;
+      }),
+    );
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.role.label} • ${_section.title}'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Tarbie Hub',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: _kBrandNavy,
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            Text(
+              '${widget.role.label} • ${activeSection.title}',
+              style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: Colors.grey.shade700,
+                    fontWeight: FontWeight.w500,
+                  ),
+            ),
+          ],
+        ),
         actions: [
           if (widget.onChangeRole != null)
             TextButton(
@@ -385,13 +452,60 @@ class _AppShellState extends State<AppShell> {
           const SizedBox(width: 8),
         ],
       ),
-      drawer: isDesktop ? null : Drawer(child: _buildNavigationList(sections)),
-      body: SafeArea(
+      drawer: isDesktop ? null : Drawer(child: _buildNavigationList(sections, activeSection)),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              _kBrandTurquoise.withValues(alpha: 0.10),
+              _kSurfaceLight,
+              _kSurfaceLight,
+            ],
+          ),
+        ),
+        child: SafeArea(
         child: Row(
           children: [
             if (isDesktop)
               NavigationRail(
-                selectedIndex: sections.indexOf(_section),
+                leading: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 12, 8, 8),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      UserAvatar(
+                        name: widget.user.name,
+                        imagePath: widget.user.avatarPath,
+                        radius: 26,
+                      ),
+                      const SizedBox(height: 6),
+                      SizedBox(
+                        width: 72,
+                        child: Text(
+                          widget.user.name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.labelSmall,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        widget.user.status.labelRu,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                    ],
+                  ),
+                ),
+                selectedIndex: sections.indexOf(activeSection),
                 onDestinationSelected: (index) =>
                     setState(() => _section = sections[index]),
                 labelType: NavigationRailLabelType.all,
@@ -401,59 +515,123 @@ class _AppShellState extends State<AppShell> {
                     .toList(),
               ),
             Expanded(
-              child: Padding(
-                padding: EdgeInsets.all(isDesktop ? 24 : 16),
+              child: Center(
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(minWidth: 320),
-                  child: isDesktop
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(flex: 2, child: content),
-                            const SizedBox(width: 16),
-                            Expanded(
-                              child: _QuickPanel(role: widget.role),
-                            ),
-                          ],
-                        )
-                      : isTablet
-                          ? Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(child: content),
-                                const SizedBox(width: 12),
-                                Expanded(child: _QuickPanel(role: widget.role)),
-                              ],
-                            )
-                          : content,
+                  constraints: const BoxConstraints(maxWidth: 1320, minWidth: 320),
+                  child: Padding(
+                    padding: EdgeInsets.all(isDesktop ? 24 : 16),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.75),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(color: Colors.white.withValues(alpha: 0.9)),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: isDesktop
+                            ? Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(flex: 2, child: content),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: _QuickPanel(
+                                      role: widget.role,
+                                      user: widget.user,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : isTablet
+                                ? Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(child: content),
+                                      const SizedBox(width: 12),
+                                      Expanded(child: _QuickPanel(role: widget.role, user: widget.user)),
+                                    ],
+                                  )
+                                : content,
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ),
           ],
         ),
-      ),
+      )),
       bottomNavigationBar: width <= 767
-          ? NavigationBar(
-              selectedIndex: sections.indexOf(_section),
-              destinations: sections
-                  .take(4)
-                  .map((s) => NavigationDestination(icon: Icon(s.icon), label: s.title))
-                  .toList(),
-              onDestinationSelected: (index) => setState(() => _section = sections[index]),
-            )
+          ? () {
+              final navSections = sections.take(4).toList();
+              var navIndex = navSections.indexOf(activeSection);
+              if (navIndex < 0) navIndex = 0;
+              return NavigationBar(
+                selectedIndex: navIndex,
+                destinations: navSections
+                    .map((s) => NavigationDestination(icon: Icon(s.icon), label: s.title))
+                    .toList(),
+                onDestinationSelected: (index) =>
+                    setState(() => _section = navSections[index]),
+              );
+            }()
           : null,
     );
   }
 
-  Widget _buildNavigationList(List<AppSection> sections) {
+  Widget _buildNavigationList(List<AppSection> sections, AppSection activeSection) {
+    final scheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
     return ListView(
       children: [
         DrawerHeader(
-          child: Text(widget.user.name, style: Theme.of(context).textTheme.titleMedium),
+          margin: EdgeInsets.zero,
+          decoration: BoxDecoration(color: scheme.surfaceContainerHighest),
+          child: SafeArea(
+            bottom: false,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                UserAvatar(
+                  name: widget.user.name,
+                  imagePath: widget.user.avatarPath,
+                  radius: 36,
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(
+                        widget.user.name,
+                        style: textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        widget.user.status.labelRu,
+                        style: textTheme.bodySmall?.copyWith(
+                          color: scheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        '@${widget.user.login}',
+                        style: textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
         ...sections.map(
           (s) => ListTile(
-            selected: _section == s,
+            selected: activeSection == s,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
             leading: Icon(s.icon),
             title: Text(s.title),
             onTap: () {
@@ -468,270 +646,60 @@ class _AppShellState extends State<AppShell> {
 }
 
 class _SectionContent extends StatelessWidget {
-  const _SectionContent({required this.section});
+  const _SectionContent({
+    required this.section,
+    required this.user,
+    required this.role,
+    required this.feedReloadToken,
+    required this.onUserUpdated,
+    required this.onPublishedGoFeed,
+  });
 
   final AppSection section;
+  final AppUser user;
+  final UserRole role;
+  final int feedReloadToken;
+  final ValueChanged<AppUser> onUserUpdated;
+  final VoidCallback onPublishedGoFeed;
 
   @override
   Widget build(BuildContext context) {
     switch (section) {
-      case AppSection.dashboard:
-        return const _DashboardPage();
-      case AppSection.events:
-        return const _EventsPage();
+      case AppSection.newsFeed:
+        return FeedPage(
+          key: ValueKey<int>(feedReloadToken),
+          currentUser: user,
+          activeRole: role,
+        );
       case AppSection.eventCreate:
-        return const _EventFormPage();
-      case AppSection.eventDetails:
-        return const _EventDetailsPage();
+        return EventCreatePage(
+          author: user,
+          activeRole: role,
+          onPublished: onPublishedGoFeed,
+        );
       case AppSection.psychologist:
-        return const _PsychologistPage();
+        return const PsychologistModulePage();
       case AppSection.social:
-        return const _SocialPage();
+        return SocialRequestsPage(user: user, role: role);
       case AppSection.notifications:
-        return const _NotificationsPage();
+        return NotificationsPage(user: user);
       case AppSection.profile:
-        return const _ProfilePage();
+        return ProfilePage(
+          user: user,
+          role: role,
+          onUserUpdated: onUserUpdated,
+        );
+      case AppSection.adminPanel:
+        return AdminPanelPage(currentUser: user);
     }
   }
 }
 
-class _DashboardPage extends StatelessWidget {
-  const _DashboardPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text('Сводка MVP', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 12),
-        Wrap(
-          spacing: 12,
-          runSpacing: 12,
-          children: const [
-            _MetricCard(title: 'Студентов', value: '642'),
-            _MetricCard(title: 'Высокий риск', value: '28'),
-            _MetricCard(title: 'Мероприятий (месяц)', value: '34'),
-            _MetricCard(title: 'Заявки соцпомощи', value: '53'),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-class _MetricCard extends StatelessWidget {
-  const _MetricCard({required this.title, required this.value});
-
-  final String title;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 220,
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title),
-              const SizedBox(height: 6),
-              Text(value, style: Theme.of(context).textTheme.headlineSmall),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _EventsPage extends StatelessWidget {
-  const _EventsPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _SimpleCardList(
-      title: 'Список мероприятий',
-      items: [
-        'Отаншылдық: встреча с ветеранами — 24.04',
-        'Құрмет: день наставника — 26.04',
-        'Талап: дебатный турнир — 28.04',
-      ],
-    );
-  }
-}
-
-class _EventFormPage extends StatelessWidget {
-  const _EventFormPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('Создание мероприятия', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 16),
-            const TextField(
-              decoration: InputDecoration(
-                labelText: 'Название',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            const TextField(
-              decoration: InputDecoration(
-                labelText: 'Ценность',
-                border: OutlineInputBorder(),
-                hintText: 'Отаншылдық / Бірлік / Адалдық ...',
-              ),
-            ),
-            const SizedBox(height: 12),
-            const TextField(
-              decoration: InputDecoration(
-                labelText: 'Группа',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Align(
-              alignment: Alignment.centerRight,
-              child: FilledButton(
-                onPressed: () {},
-                child: const Text('Сохранить'),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EventDetailsPage extends StatelessWidget {
-  const _EventDetailsPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _SimpleCardList(
-      title: 'Карточка мероприятия',
-      items: [
-        'Куратор: Жуматай А.',
-        'Группа: IS-201',
-        'Участники: 21 / 24',
-        'Отчет: текст + 3 фото',
-      ],
-    );
-  }
-}
-
-class _PsychologistPage extends StatelessWidget {
-  const _PsychologistPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _SimpleCardList(
-      title: 'Модуль психолога',
-      items: [
-        'Студент: Ержан Т. — риск: высокий',
-        'Студент: Динара М. — риск: средний',
-        'Фильтры: группа / курс / уровень риска',
-      ],
-    );
-  }
-}
-
-class _SocialPage extends StatelessWidget {
-  const _SocialPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _SimpleCardList(
-      title: 'Заявки соцпомощи',
-      items: [
-        '№A-1042 — На проверке',
-        '№A-1038 — Требуется дополнение',
-        '№A-1029 — Одобрено',
-      ],
-    );
-  }
-}
-
-class _NotificationsPage extends StatelessWidget {
-  const _NotificationsPage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _SimpleCardList(
-      title: 'Уведомления',
-      items: [
-        'Статус заявки №A-1038 изменен',
-        'Новое мероприятие для группы IS-201',
-        'Загрузите недостающие документы до 25.04',
-      ],
-    );
-  }
-}
-
-class _ProfilePage extends StatelessWidget {
-  const _ProfilePage();
-
-  @override
-  Widget build(BuildContext context) {
-    return const _SimpleCardList(
-      title: 'Профиль пользователя',
-      items: [
-        'ФИО: демо-пользователь',
-        'Телефон: +7 700 000 00 00',
-        'Роль: зависит от выбранного контура',
-      ],
-    );
-  }
-}
-
-class _SimpleCardList extends StatelessWidget {
-  const _SimpleCardList({required this.title, required this.items});
-
-  final String title;
-  final List<String> items;
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 16),
-            ...items.map(
-              (item) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle_outline, size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(child: Text(item)),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _QuickPanel extends StatelessWidget {
-  const _QuickPanel({required this.role});
+  const _QuickPanel({required this.role, required this.user});
 
   final UserRole role;
+  final AppUser user;
 
   @override
   Widget build(BuildContext context) {
@@ -741,19 +709,43 @@ class _QuickPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Быстрые действия', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            FilledButton.tonal(
-              onPressed: () {},
-              child: const Text('Создать уведомление'),
+            Row(
+              children: [
+                const CircleAvatar(
+                  radius: 12,
+                  backgroundColor: _kBrandTurquoise,
+                  child: Icon(Icons.auto_awesome, size: 14, color: Colors.white),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Сейчас',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        color: _kBrandNavy,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ],
             ),
             const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: () {},
-              child: const Text('Экспорт PDF отчета'),
+            Text('Роль в контуре: ${role.label}'),
+            const SizedBox(height: 12),
+            FutureBuilder<int>(
+              future: AppDatabase.instance.countUnreadNotifications(user.id),
+              builder: (context, snap) {
+                final n = snap.data ?? 0;
+                return Text(
+                  n > 0 ? 'Непрочитанных уведомлений: $n' : 'Нет непрочитанных уведомлений',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                );
+              },
             ),
-            const SizedBox(height: 16),
-            Text('Текущая роль: ${role.label}'),
+            if (user.isAdmin) ...[
+              const SizedBox(height: 12),
+              Text(
+                'Администратор: пункт «Админ-панель» в меню.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
           ],
         ),
       ),

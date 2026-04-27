@@ -7,10 +7,23 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:tarbie_hub/data/app_database.dart';
 import 'package:tarbie_hub/main.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  setUpAll(() {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  });
+
+  setUp(() async {
+    await AppDatabase.instance.close();
+    await AppDatabase.instance.init(inMemory: true);
+  });
+
   testWidgets('Login screen renders for desktop MVP', (WidgetTester tester) async {
     await tester.pumpWidget(const TarbieHubApp());
 
