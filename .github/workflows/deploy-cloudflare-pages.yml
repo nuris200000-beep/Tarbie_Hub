@@ -1,0 +1,44 @@
+# Сборка Flutter Web и публикация в Cloudflare Pages (домен: Custom domains → tarbiehub.us).
+name: Deploy Cloudflare Pages
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-pages-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Pub get & build web
+        run: |
+          flutter config --enable-web
+          flutter pub get
+          flutter build web --release
+
+      - name: Publish to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Имя должно совпадать с проектом в Cloudflare Pages (при необходимости поменяйте здесь и в Dashboard).
+          projectName: tarbiehub
+          directory: build/web
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}

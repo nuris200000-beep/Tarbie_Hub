@@ -1,11 +1,11 @@
 {
-    "name": "tarbie_hub",
-    "short_name": "tarbie_hub",
+    "name": "Тәрбие Хаб",
+    "short_name": "Тәрбие Хаб",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Tarbie Hub — колледждік қолданба / приложение колледжа · tarbiehub.us",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
